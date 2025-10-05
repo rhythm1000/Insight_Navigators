@@ -1,0 +1,89 @@
+import pandas as pd
+import numpy as np
+import lightgbm as lgb
+import xgboost as xgb
+from catboost import CatBoostRegressor
+from sklearn.linear_model import LinearRegression
+
+# --- 1. LOAD AND PREPARE DATA ---
+print("Loading and preparing data...")
+df = pd.read_csv('master_flight_data_cleaned.csv')
+
+# --- FEATURE ENGINEERING ---
+print("Creating features for the models...")
+df['ground_time_pressure'] = df['minimum_turn_minutes'] / df['scheduled_ground_time_minutes']
+df.replace([np.inf, -np.inf], 999, inplace=True)
+df['load_factor'] = (df['total_pax'] / df['total_seats']).fillna(0).clip(0, 1.1)
+df['baggage_complexity'] = ((df.get('bag_type_Origin', 0) + (df.get('bag_type_Transfer', 0) * 1.5)) / df['total_pax']).fillna(0)
+df['special_needs_index'] = ((df['child_pax_count'] + df['lap_child_count'] + (df['ssr_wheelchair_count'] * 2.0)) / df['total_pax']).fillna(0)
+df['is_widebody'] = df['fleet_type'].str.contains('B767|B777|B787', na=False).astype(int)
+df['scheduled_departure_datetime_local'] = pd.to_datetime(df['scheduled_departure_datetime_local'])
+df['departure_hour'] = df['scheduled_departure_datetime_local'].dt.hour
+df['departure_day_of_week'] = df['scheduled_departure_datetime_local'].dt.dayofweek
+
+# --- PREPARE DATA FOR MODEL TRAINING ---
+df['departure_delay_minutes'] = (pd.to_datetime(df['actual_departure_datetime_local']) - df['scheduled_departure_datetime_local']).dt.total_seconds() / 60
+df.dropna(subset=['departure_delay_minutes'], inplace=True)
+
+features = [
+    'ground_time_pressure', 'load_factor', 'baggage_complexity', 'special_needs_index',
+    'is_widebody', 'departure_hour', 'departure_day_of_week',
+    'total_seats', 'minimum_turn_minutes'
+]
+target = 'departure_delay_minutes'
+X = df[features]
+y = df[target]
+
+# --- 2. TRAIN ALL 4 MODELS ---
+print("Training all 4 models: Linear Regression, LightGBM, XGBoost, and CatBoost...")
+models = {
+    'linear': LinearRegression(),
+    'lgbm': lgb.LGBMRegressor(random_state=42),
+    'xgb': xgb.XGBRegressor(random_state=42, n_estimators=100),
+    'cat': CatBoostRegressor(random_state=42, verbose=0, n_estimators=100)
+}
+
+for name, model in models.items():
+    print(f"  - Training {name}...")
+    model.fit(X, y)
+    df[f'score_{name}'] = model.predict(X)
+
+# --- 3. NORMALIZE SCORES AND CREATE RANKS ---
+print("Normalizing scores and creating daily ranks for each model...")
+for name in models.keys():
+    score_col = f'score_{name}'
+    rank_col = f'rank_{name}'
+    
+    min_val, max_val = df[score_col].min(), df[score_col].max()
+    df[score_col] = 100 * (df[score_col] - min_val) / (max_val - min_val) if (max_val - min_val) > 0 else 0
+    
+    df[rank_col] = df.groupby('scheduled_departure_date_local')[score_col].rank(method='first', ascending=False)
+
+# --- 4. CLASSIFY FLIGHTS (DELIVERABLE 2) ---
+print("Classifying flights...")
+def classify_flight(rank_series):
+    q_difficult = rank_series.quantile(0.20)
+    q_easy = rank_series.quantile(0.80)
+    conditions = [(rank_series <= q_difficult), (rank_series > q_easy)]
+    choices = ['Difficult', 'Easy']
+    return np.select(conditions, choices, default='Medium')
+
+df['difficulty_class'] = df.groupby('scheduled_departure_date_local')['rank_lgbm'].transform(classify_flight)
+
+# --- 5. SAVE THE FINAL OUTPUT FILE (DELIVERABLE 2) ---
+print("Saving the final comprehensive output file...")
+output_columns = [
+    'company_id', 'flight_number', 'scheduled_departure_date_local',
+    'scheduled_arrival_station_code', 'fleet_type', 'carrier'
+] + features + ['score_linear', 'score_lgbm', 'score_xgb', 'score_cat',
+                'rank_linear', 'rank_lgbm', 'rank_xgb', 'rank_cat',
+                'difficulty_class']
+
+final_output_df = df[output_columns]
+
+your_name = "johndoe" # <--- CHANGE THIS
+output_filename = f'test_{your_name}.csv'
+final_output_df.to_csv(output_filename, index=False)
+
+print("\nProcess Complete!")
+print(f"Final results with all 4 models saved to '{output_filename}'")
