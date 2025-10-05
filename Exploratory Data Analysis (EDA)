@@ -1,0 +1,49 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# --- 1. LOAD AND PREPARE DATA ---
+try:
+    df = pd.read_csv('master_flight_data_cleaned.csv')
+except FileNotFoundError:
+    print("Error: 'master_flight_data_cleaned.csv' not found. Please run the merging and cleaning script first.")
+    exit()
+
+# Pre-computation
+df['departure_delay_minutes'] = (pd.to_datetime(df['actual_departure_datetime_local']) - pd.to_datetime(df['scheduled_departure_datetime_local'])).dt.total_seconds() / 60
+df.dropna(subset=['departure_delay_minutes'], inplace=True)
+total_flights = len(df)
+
+# --- 2. PERFORM ALL EDA CALCULATIONS ---
+# Calculation for Q1
+percentage_delayed = (len(df[df['departure_delay_minutes'] > 0]) / total_flights) * 100
+avg_delay_for_delayed = df[df['departure_delay_minutes'] > 0]['departure_delay_minutes'].mean()
+
+# Calculation for Q2
+at_risk_flights_count = len(df[df['scheduled_ground_time_minutes'] <= df['minimum_turn_minutes'] * 1.1])
+percentage_at_risk = (at_risk_flights_count / total_flights) * 100
+
+# Calculation for Q3
+df_with_checked = df[df['bag_type_Origin'] > 0].copy()
+df_with_checked['transfer_ratio'] = df_with_checked['bag_type_Transfer'] / df_with_checked['bag_type_Origin']
+avg_bag_ratio = df_with_checked['transfer_ratio'].mean()
+
+# Calculation for Q4
+df['load_factor'] = (df['total_pax'] / df['total_seats']).fillna(0).clip(0, 1)
+load_correlation = df['load_factor'].corr(df['departure_delay_minutes'])
+
+# Calculation for Q5
+high_load_flights = df[df['load_factor'] >= df['load_factor'].median()]
+avg_delay_high_ssr = high_load_flights[high_load_flights['ssr_total_count'] > high_load_flights['ssr_total_count'].median()]['departure_delay_minutes'].mean()
+avg_delay_low_ssr = high_load_flights[high_load_flights['ssr_total_count'] <= high_load_flights['ssr_total_count'].median()]['departure_delay_minutes'].mean()
+
+# --- 3. PRINT FINAL TAKEAWAYS ---
+print("="*60)
+print("             Key Takeaways from Exploratory Data Analysis")
+print("="*60)
+print(f"\n- **Delay Analysis**: Nearly half ({percentage_delayed:.2f}%) of all flights are delayed. When a flight is delayed, the average delay is significant at {avg_delay_for_delayed:.2f} minutes.")
+print(f"\n- **Ground Time Pressure**: {at_risk_flights_count} flights, representing {percentage_at_risk:.2f}% of the total operation, are scheduled with insufficient or dangerously low ground times.")
+print(f"\n- **Baggage Complexity**: The operation is heavily reliant on connecting passengers, with an average of {avg_bag_ratio:.2f} transfer bags for every 1 checked bag.")
+print(f"\n- **Passenger Load**: How full a flight is has no meaningful correlation with delays ({load_correlation:.4f}), indicating other factors are more important.")
+print(f"\n- **Service Needs Impact**: On full flights, high numbers of special service requests are linked to longer delays ({avg_delay_high_ssr:.2f} mins) compared to flights with fewer service needs ({avg_delay_low_ssr:.2f} mins).")
+print("="*60)
