@@ -1,0 +1,42 @@
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# --- 1. LOAD FINAL RESULTS ---
+your_name = "johndoe" # <--- CHANGE THIS
+filename = f'test_{your_name}.csv'
+try:
+    df = pd.read_csv(filename)
+except FileNotFoundError:
+    print(f"Error: '{filename}' not found. Please run the modeling script first.")
+    exit()
+
+print("="*60)
+print("             DELIVERABLE 3: Post-Analysis & Operational Insights")
+print("="*60)
+
+# --- 2. SUMMARIZE DIFFICULT DESTINATIONS ---
+print("\n--- 1. Consistently Difficult Destinations ---")
+difficult_flights = df[df['difficulty_class'] == 'Difficult']
+total_counts = df['scheduled_arrival_station_code'].value_counts().reset_index().rename(columns={'index': 'destination', 'scheduled_arrival_station_code': 'total_flight_count'})
+difficult_counts = difficult_flights['scheduled_arrival_station_code'].value_counts().reset_index().rename(columns={'index': 'destination', 'scheduled_arrival_station_code': 'difficult_flight_count'})
+destination_summary = pd.merge(difficult_counts, total_counts, on='destination')
+destination_summary['difficulty_ratio'] = destination_summary['difficult_flight_count'] / destination_summary['total_flight_count']
+consistently_difficult = destination_summary.sort_values(by='difficulty_ratio', ascending=False)
+print("\nTop 10 Most Consistently Difficult Destinations (by % of flights classified as 'Difficult'):\n")
+print(consistently_difficult.head(10))
+
+# --- 3. IDENTIFY COMMON DRIVERS ---
+print("\n--- 2. Common Drivers of Flight Difficulty ---")
+feature_columns = [col for col in df.columns if col in ['ground_time_pressure', 'load_factor', 'baggage_complexity', 'special_needs_index', 'is_widebody']]
+driver_analysis = df.groupby('difficulty_class')[feature_columns].mean().T
+driver_analysis['Difficult_vs_Easy_Lift'] = (driver_analysis['Difficult'] / driver_analysis['Easy']) - 1 if 'Easy' in driver_analysis.columns else 0
+print("\nComparison of Average Feature Values by Difficulty Class:\n")
+print(driver_analysis.sort_values(by='Difficult_vs_Easy_Lift', ascending=False))
+
+# --- 4. PROVIDE RECOMMENDATIONS ---
+print("\n--- 3. Recommended Actions ---")
+print("1.  **Deploy 'Turnaround Teams'**: For the Top 10 highest-ranked flights each day, assign a dedicated team to proactively manage the turnaround.")
+print("2.  **Prioritize Gates by Constraint**: Use the `ground_time_pressure` score to assign flights to gates with the shortest taxi times and pre-stage equipment.")
+print("3.  **Staff for Service**: Use the `special_needs_index` to assign extra gate agents to manage pre-boarding on service-intensive flights.")
+print("="*60)
