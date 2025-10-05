@@ -1,0 +1,64 @@
+import pandas as pd
+import numpy as np
+
+# --- 1. LOAD ALL RAW DATASETS ---
+print("Step 1: Loading all 5 raw data files...")
+try:
+    flight_df = pd.read_csv('Flight Level Data.csv')
+    pnr_flight_df = pd.read_csv('PNR+Flight+Level+Data.csv')
+    bag_df = pd.read_csv('Bag+Level+Data.csv')
+    pnr_remark_df = pd.read_csv('PNR Remark Level Data.csv')
+    print("All files loaded successfully.")
+except FileNotFoundError as e:
+    print(f"Error: {e}. Make sure all CSV files are in the same directory as the script.")
+    exit()
+
+# --- 2. STANDARDIZE JOIN KEYS ---
+print("Step 2: Standardizing join keys across tables...")
+flight_key = ['company_id', 'flight_number', 'scheduled_departure_date_local']
+for df in [flight_df, pnr_flight_df, bag_df]:
+    df['scheduled_departure_date_local'] = pd.to_datetime(df['scheduled_departure_date_local']).dt.strftime('%Y-%m-%d')
+
+# --- 3. AGGREGATE PASSENGER, BAG, AND SSR DATA ---
+print("Step 3: Aggregating PNR, Bag, and SSR data to the flight level...")
+# PNR Data (with de-duplication to prevent over-counting)
+pnr_unique_pax = pnr_flight_df.drop_duplicates(subset=flight_key + ['record_locator'])
+pnr_agg = pnr_unique_pax.groupby(flight_key).agg(total_pax=('total_pax', 'sum')).reset_index()
+pnr_flight_df['is_child'] = (pnr_flight_df['is_child'] == 'Y').astype(int)
+pnr_other_agg = pnr_flight_df.groupby(flight_key).agg(
+    child_pax_count=('is_child', 'sum'),
+    lap_child_count=('lap_child_count', 'sum')
+).reset_index()
+pnr_final_agg = pd.merge(pnr_agg, pnr_other_agg, on=flight_key, how="left")
+
+# Bag Data (pivoting to create separate columns for bag types)
+bag_agg = bag_df.groupby(flight_key + ['bag_type']).size().unstack(fill_value=0).add_prefix('bag_type_').reset_index()
+
+# SSR Data (mapping remarks to flights via record_locator)
+pnr_remark_df_cleaned = pnr_remark_df.drop(columns=['flight_number'])
+pnr_to_flight_map = pnr_flight_df[flight_key + ['record_locator']].drop_duplicates()
+ssr_with_flights = pd.merge(pnr_remark_df_cleaned, pnr_to_flight_map, on='record_locator', how='inner')
+ssr_agg = ssr_with_flights.groupby(flight_key).size().reset_index(name='ssr_total_count')
+ssr_with_flights['is_wheelchair'] = ssr_with_flights['special_service_request'].str.contains("Wheelchair", na=False).astype(int)
+wheelchair_agg = ssr_with_flights.groupby(flight_key)['is_wheelchair'].sum().reset_index(name='ssr_wheelchair_count')
+ssr_final_agg = pd.merge(ssr_agg, wheelchair_agg, on=flight_key, how="left")
+
+# --- 4. MERGE ALL SUMMARIES INTO MASTER TABLE ---
+print("Step 4: Merging all aggregated data into a single master table...")
+master_df = pd.merge(flight_df, pnr_final_agg, on=flight_key, how='left')
+master_df = pd.merge(master_df, bag_agg, on=flight_key, how='left')
+master_df = pd.merge(master_df, ssr_final_agg, on=flight_key, how='left')
+
+# Fill NaN values for counts with 0
+count_cols = [col for col in master_df.columns if ('_pax' in col or '_count' in col or 'bag_type_' in col)]
+for col in count_cols:
+    master_df[col] = master_df[col].fillna(0).astype(int)
+
+# --- 5. CLEAN DATA ERRORS ---
+print("Step 5: Cleaning data errors (impossible ground times)...")
+# Correct negative and impossibly short (< 25 min) ground times by replacing them with the minimum required time
+master_df.loc[master_df['scheduled_ground_time_minutes'] < 25, 'scheduled_ground_time_minutes'] = master_df['minimum_turn_minutes']
+
+# --- 6. SAVE THE FINAL CLEANED DATASET ---
+master_df.to_csv('master_flight_data_cleaned.csv', index=False)
+print("\nProcess Complete! A clean master file named 'master_flight_data_cleaned.csv' has been created.")
